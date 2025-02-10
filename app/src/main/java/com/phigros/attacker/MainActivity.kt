@@ -98,27 +98,6 @@ class MainActivity : AppCompatActivity() {
         // 读取文件按钮点击事件
         readFileButton.setOnClickListener {
             lifecycleScope.launch {
-                val tokenFile = getCachedTokenFile()
-
-                if (tokenFile.exists()) {
-                    val encrypttoken = tokenFile.readText()
-                    val sessionToken = decrypt(encrypttoken, key = encryptionKey)
-                    val phigrosCloud = PhigrosCloud(sessionToken = sessionToken)
-
-                    // 异步获取存档数据
-                    val saveData = withContext(Dispatchers.IO) {
-                        phigrosCloud.getSave()
-                    }
-
-                    // 检查获取的数据
-                    if (saveData != null) {
-                        fileContentTextView.text = "卡密: $encrypttoken,存档URL: ${saveData.getJSONObject("gameFile").getString("url")}"
-                    } else {
-                        fileContentTextView.text = "卡密: $encrypttoken, 没有找到存档数据"
-                    }
-
-                    return@launch
-                }
 
                 if (iUserService == null) {
                     Toast.makeText(this@MainActivity, "请先连接Shizuku服务", Toast.LENGTH_SHORT).show()
@@ -127,18 +106,49 @@ class MainActivity : AppCompatActivity() {
 
                 try {
                     // 获取 Phigros 配置文件的 sessionToken
-                    val command = "cat ${Environment.getExternalStorageDirectory().getPath()}/Android/data/com.PigeonGames.Phigros/files/.userdata"
-                    val result = exec(command)
+                    val tokenFile = getCachedTokenFile()
 
-                    if (result.trim().isEmpty()) throw Exception("返回结果为空")
+                    val sessionToken: String
+                    var displayText = "" // 用来拼接最终要显示的文本
 
-                    val resultMap: Map<String, Any>? = Gson().fromJson(result, object : TypeToken<Map<String, Any>>() {}.type)
-                    val sessionToken = resultMap?.get("sessionToken") as? String
-                    if (sessionToken == null) throw Exception("未找到 sessionToken")
+// 获取token逻辑
+                    if (tokenFile.exists()) {
+                        // 如果token文件存在，读取并解密token
+                        val encrypttoken = tokenFile.readText()
+                        sessionToken = decrypt(encrypttoken, key = encryptionKey)
+                        displayText = "卡密: $encrypttoken" // 设置显示的token内容
+                    } else {
+                        // 如果token文件不存在，读取存档数据并加密token
+                        val command = "cat ${Environment.getExternalStorageDirectory().getPath()}/Android/data/com.PigeonGames.Phigros/files/.userdata"
+                        val result = exec(command)
 
-                    val encryptedToken = encrypt(sessionToken, encryptionKey)
-                    tokenFile.writeText(encryptedToken)
-                    fileContentTextView.text = "卡密: $encryptedToken"
+                        if (result.trim().isEmpty()) throw Exception("返回结果为空")
+
+                        val resultMap: Map<String, Any>? = Gson().fromJson(result, object : TypeToken<Map<String, Any>>() {}.type)
+                        sessionToken = (resultMap?.get("sessionToken") as? String).toString()
+                        if (sessionToken == null) throw Exception("未找到 sessionToken")
+
+                        val encryptedToken = encrypt(sessionToken, encryptionKey)
+                        tokenFile.writeText(encryptedToken.trim())
+                        displayText = "卡密: $encryptedToken" // 设置显示的token内容
+                    }
+
+                    // 在最后异步获取存档数据
+                    val phigrosCloud = PhigrosCloud(sessionToken = sessionToken)
+                    val saveData = withContext(Dispatchers.IO) {
+                        phigrosCloud.getSave()
+                    }
+
+                    // 检查获取的数据
+                    if (saveData != null) {
+                        displayText += ", 存档URL: ${saveData.getJSONObject("gameFile").getString("url")}"
+                    } else {
+                        displayText += ", 没有找到存档数据"
+                    }
+
+                    // 最后一次更新fileContentTextView.text
+                    fileContentTextView.text = displayText
+
 
                 } catch (e: Exception) {
                     fileContentTextView.text = "Phigros未安装或未登录云存档"
