@@ -29,14 +29,16 @@ import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
 
-    private val PERMISSION_CODE = 10001
     private var shizukuServiceState = false
     private lateinit var checkPermissionButton: Button
     private lateinit var readFileButton: Button
     private lateinit var connectShizukuButton: Button
+    private lateinit var clearCacheButton: Button // 清理缓存按钮
     private lateinit var fileContentTextView: TextView
     private var iUserService: IUserService? = null
-    private val encryptionKey = "bYQ8t5agSkfPCiLa"
+    private val encryptionKey = BuildConfig.OUT_ENCRYPTION_KEY
+
+    private val cacheManager by lazy { CacheManager(cacheDir) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,10 +46,6 @@ class MainActivity : AppCompatActivity() {
         findViews()
         addEvents()
         initShizuku()
-    }
-
-    private fun getCachedTokenFile(): File {
-        return File(cacheDir, "cached_token.txt")
     }
 
     private fun initShizuku() {
@@ -67,7 +65,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 Shizuku.unbindUserService(userServiceArgs, serviceConnection, true)
             } catch (e: Exception) {
-                Log.e("MainActivity", "Shizuku unbindUserService failed", e)
+                Timber.e("MainActivity", "Shizuku unbindUserService failed", e)
             }
         }
     }
@@ -98,57 +96,16 @@ class MainActivity : AppCompatActivity() {
         // 读取文件按钮点击事件
         readFileButton.setOnClickListener {
             lifecycleScope.launch {
-
                 if (iUserService == null) {
                     Toast.makeText(this@MainActivity, "请先连接Shizuku服务", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
 
                 try {
-                    // 获取 Phigros 配置文件的 sessionToken
-                    val tokenFile = getCachedTokenFile()
+                    val displayText = getDisplayText()
 
-                    val sessionToken: String
-                    var displayText = "" // 用来拼接最终要显示的文本
-
-// 获取token逻辑
-                    if (tokenFile.exists()) {
-                        // 如果token文件存在，读取并解密token
-                        val encrypttoken = tokenFile.readText()
-                        sessionToken = decrypt(encrypttoken, key = encryptionKey)
-                        displayText = "卡密: $encrypttoken" // 设置显示的token内容
-                    } else {
-                        // 如果token文件不存在，读取存档数据并加密token
-                        val command = "cat ${Environment.getExternalStorageDirectory().getPath()}/Android/data/com.PigeonGames.Phigros/files/.userdata"
-                        val result = exec(command)
-
-                        if (result.trim().isEmpty()) throw Exception("返回结果为空")
-
-                        val resultMap: Map<String, Any>? = Gson().fromJson(result, object : TypeToken<Map<String, Any>>() {}.type)
-                        sessionToken = (resultMap?.get("sessionToken") as? String).toString()
-                        if (sessionToken == null) throw Exception("未找到 sessionToken")
-
-                        val encryptedToken = encrypt(sessionToken, encryptionKey)
-                        tokenFile.writeText(encryptedToken.trim())
-                        displayText = "卡密: $encryptedToken" // 设置显示的token内容
-                    }
-
-                    // 在最后异步获取存档数据
-                    val phigrosCloud = PhigrosCloud(sessionToken = sessionToken)
-                    val saveData = withContext(Dispatchers.IO) {
-                        phigrosCloud.getSave()
-                    }
-
-                    // 检查获取的数据
-                    if (saveData != null) {
-                        displayText += ", 存档URL: ${saveData.getJSONObject("gameFile").getString("url")}"
-                    } else {
-                        displayText += ", 没有找到存档数据"
-                    }
-
-                    // 最后一次更新fileContentTextView.text
+                    // 更新fileContentTextView.text
                     fileContentTextView.text = displayText
-
 
                 } catch (e: Exception) {
                     fileContentTextView.text = "Phigros未安装或未登录云存档"
@@ -167,6 +124,99 @@ class MainActivity : AppCompatActivity() {
                 Shizuku.bindUserService(userServiceArgs, serviceConnection)
             }
         }
+
+        // 清理缓存按钮点击事件
+        clearCacheButton.setOnClickListener {
+            lifecycleScope.launch {
+                clearCache()
+            }
+        }
+    }
+
+    private suspend fun clearCache() {
+        try {
+            cacheManager.clearCache() // 调用 CacheManager 的 clearCache 方法
+            Toast.makeText(this, "缓存已清理", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "清理缓存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            e.printStackTrace()
+        }
+    }
+
+    private suspend fun getDisplayText(): String {
+        val tokenFile = cacheManager.getTokenFile()
+        val savesFile = cacheManager.getSavesFile()
+
+        val sessionToken: String
+        val savesURL: String
+        val encryptToken: String
+        val savesSummary: Map<String, Any>
+
+        // 获取token逻辑
+        if (tokenFile.exists() && savesFile.exists()) {
+            // 读取缓存
+            encryptToken = tokenFile.readText()
+            val savesJSON = JSONObject(savesFile.readText())
+            savesURL = savesJSON.getJSONObject("gameFile").getString("url").trim()
+            savesSummary = getSummary(savesJSON.getString("summary"))
+            sessionToken = decrypt(encryptToken, key = encryptionKey).trim()
+        } else {
+            // 获取token
+            val command = "cat ${Environment.getExternalStorageDirectory().getPath()}/Android/data/com.PigeonGames.Phigros/files/.userdata"
+            val result = exec(command)
+
+            if (result.trim().isEmpty()) throw Exception("返回结果为空")
+
+            val resultMap: Map<String, Any>? = Gson().fromJson(result, object : TypeToken<Map<String, Any>>() {}.type)
+            sessionToken = (resultMap?.get("sessionToken") as? String).toString().trim()
+
+            encryptToken = encrypt(sessionToken, encryptionKey).trim()
+            cacheManager.cacheToken(encryptToken.trim())
+            // 获得云存档
+            val phigrosCloud = PhigrosCloud(sessionToken = sessionToken)
+            val saveData = withContext(Dispatchers.IO) {
+                phigrosCloud.getSave()
+            }
+
+            if (saveData != null) {
+                savesURL = saveData.getJSONObject("gameFile").getString("url").trim()
+                savesSummary = getSummary(saveData.getString("summary"))
+                cacheManager.cacheSaves(saveData.toString().trim())
+            } else
+                throw Exception("存档数据为空")
+        }
+
+        // 定义一个辅助函数来处理转换
+        fun formatSaveData(data: List<Any>): String {
+            return data.take(3).mapIndexed { index, value ->
+                val strValue = value.toString()
+                when (index) {
+                    0 -> "Played: $strValue"
+                    1 -> "FC: $strValue"
+                    2 -> "AP: $strValue"
+                    else -> strValue
+                }
+            }.joinToString(", ")
+        }
+
+        // 定义一个包含所有难度的列表
+        val difficultyList = listOf("EZ", "HD", "IN", "AT")
+
+        // 使用字典 (Map) 来存储每个难度的格式化数据
+        val difficultyDataMap = difficultyList.associateWith { difficulty ->
+            val data = savesSummary[difficulty] as? List<Any> ?: return@associateWith "No data available"
+            formatSaveData(data)
+        }
+
+        return """
+        |卡密:${encryptToken.trim()}
+        |存档URL:${savesURL.trim()}
+        |rks:${savesSummary.get("rks").toString().trim()}
+        |EZ:${difficultyDataMap["EZ"].toString().trim()}
+        |HD:${difficultyDataMap["HD"].toString().trim()}
+        |IN:${difficultyDataMap["IN"].toString().trim()}
+        |AT:${difficultyDataMap["AT"].toString().trim()}
+        """.trimMargin("|")
     }
 
     @Throws(RemoteException::class)
@@ -207,6 +257,7 @@ class MainActivity : AppCompatActivity() {
         readFileButton = findViewById(R.id.read_file_button)
         connectShizukuButton = findViewById(R.id.connect_shizuku_button)
         fileContentTextView = findViewById(R.id.file_content_text_view)
+        clearCacheButton = findViewById(R.id.clear_cache_button) // 获取清理缓存按钮
     }
 
     companion object {
@@ -226,14 +277,45 @@ class MainActivity : AppCompatActivity() {
             val cipher = Cipher.getInstance("AES")
             cipher.init(Cipher.DECRYPT_MODE, secretKey)
 
-            // 先将 Base64 编码的数据解码为字节数组
             val encryptedData = Base64.decode(data, Base64.DEFAULT)
-
-            // 执行解密
             val decryptedData = cipher.doFinal(encryptedData)
 
-            // 将解密后的字节数组转换为字符串并返回
             return String(decryptedData, StandardCharsets.UTF_8)
+        }
+    }
+
+    // CacheManager class to handle token and saves file
+    class CacheManager(private val cacheDir: File) {
+
+        fun getTokenFile(): File {
+            return File(cacheDir, "cached_token.txt")
+        }
+
+        fun getSavesFile(): File {
+            return File(cacheDir, "cached_saves.json")
+        }
+
+        fun cacheToken(encryptedToken: String) {
+            val tokenFile = getTokenFile()
+            tokenFile.writeText(encryptedToken)
+        }
+
+        fun cacheSaves(saveData: String) {
+            val savesFile = getSavesFile()
+            savesFile.writeText(saveData)
+        }
+
+        // 新增：清除缓存方法
+        fun clearCache() {
+            val tokenFile = getTokenFile()
+            val savesFile = getSavesFile()
+
+            if (tokenFile.exists()) {
+                tokenFile.delete()
+            }
+            if (savesFile.exists()) {
+                savesFile.delete()
+            }
         }
     }
 }

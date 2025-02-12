@@ -4,9 +4,15 @@ import okhttp3.*
 import org.json.JSONObject
 import timber.log.Timber
 import java.io.IOException
+import java.security.MessageDigest
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.util.Base64
 import java.nio.ByteBuffer
-import java.util.*
-import kotlin.collections.Map
+import java.nio.ByteOrder
+
+val isoDate = Instant.now().atOffset(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT)
 
 class PigeonRequest(
     private val sessionToken: String,
@@ -17,19 +23,18 @@ class PigeonRequest(
         "X-LC-Key" to "Qr9AEqtuoSVS3zeD6iVbM4ZC0AtkJcQ89tywVyi0",
         "User-Agent" to "LeanCloud-CSharp-SDK/1.0.3",
         "Accept" to "application/json",
-        "Connection" to "keep-alive"
+        "Connection" to "keep-alive",
+        "Content-Type" to "application/json"
     )
 ) {
 
-    suspend fun request(method: String, url: String, headers: Map<String, String>? = null, body: RequestBody? = null): Response {
+    fun request(method: String, url: String, headers: Map<String, String>? = null, body: RequestBody? = null): Response {
         val finalHeaders = headers ?: this.headers
         val requestBuilder = Request.Builder().url(url)
-
         finalHeaders.forEach { (key, value) ->
             requestBuilder.addHeader(key, value)
         }
 
-        // 设置请求方法
         when (method.uppercase()) {
             "GET" -> requestBuilder.get()
             "DELETE" -> requestBuilder.delete()
@@ -39,12 +44,9 @@ class PigeonRequest(
         }
 
         val request = requestBuilder.build()
-
-        // 执行请求并返回响应
         val response = client.newCall(request).execute()
 
-        // 日志输出
-        Timber.d("请求类型: $method,\n请求URL: $url,\n请求头: $finalHeaders,\n状态码: ${response.code}",)
+        Timber.d("请求类型: $method,\n请求URL: $url,\n请求头: $finalHeaders,\n状态码: ${response.code}")
 
         if (!response.isSuccessful) {
             throw IOException("Unexpected code $response")
@@ -53,19 +55,19 @@ class PigeonRequest(
         return response
     }
 
-    suspend fun get(url: String, headers: Map<String, String>? = null): Response {
+    fun get(url: String, headers: Map<String, String>? = null): Response {
         return request("GET", url, headers)
     }
 
-    suspend fun delete(url: String, headers: Map<String, String>? = null): Response {
+    fun delete(url: String, headers: Map<String, String>? = null): Response {
         return request("DELETE", url, headers)
     }
 
-    suspend fun post(url: String, body: RequestBody, headers: Map<String, String>? = null): Response {
+    fun post(url: String, body: RequestBody, headers: Map<String, String>? = null): Response {
         return request("POST", url, headers, body)
     }
 
-    suspend fun put(url: String, body: RequestBody, headers: Map<String, String>? = null): Response {
+    fun put(url: String, body: RequestBody, headers: Map<String, String>? = null): Response {
         return request("PUT", url, headers, body)
     }
 }
@@ -84,52 +86,153 @@ class PhigrosCloud(
         this.request = PigeonRequest(sessionToken, client ?: OkHttpClient())
     }
 
-    // 获取玩家 summary 数据
     var isRequestInProgress = false
-    suspend fun getSummary(): Map<String, Any>? {
-        Timber.d("调用函数：getSummary()")
-        val response = request.get(baseUrl + "classes/_GameSave?limit=1")
-        val jsonObject = JSONObject(response.body?.string() ?: "")
-        val result = jsonObject.getJSONArray("results").getJSONObject(0)
-        val summaryData = Base64.getDecoder().decode(result.getString("summary"))
 
-        // 解包 summary 数据
-        val summary = unpackSummary(summaryData)
-
-        val returnData = mapOf(
-            "checksum" to result.getJSONObject("gameFile").getJSONObject("metaData").getString("_checksum"),
-            "updateAt" to result.getString("updatedAt"),
-            "url" to result.getJSONObject("gameFile").getString("url"),
-            "saveVersion" to summary[0],
-            "challenge" to summary[1],
-            "rks" to summary[2],
-            "gameVersion" to summary[3],
-            "avatar" to String(summary[4] as ByteArray),
-            "EZ" to summary.slice(5..7),
-            "HD" to summary.slice(8..10),
-            "IN" to summary.slice(11..13),
-            "AT" to summary.slice(14..16)
-        )
-
-        Timber.d("函数\"getSummary()\"返回：$returnData")
-        return returnData
-    }
-    suspend fun getSave(): JSONObject? {
-        if (isRequestInProgress) return null
+    private suspend fun <T> safeRequest(call: suspend () -> T): T? {
+        if (isRequestInProgress) {
+            Timber.w("请求正在处理中")
+            return null
+        }
         isRequestInProgress = true
         return try {
-            // 执行 GET 请求获取存档数据
-            val response = request.get(baseUrl + "classes/_GameSave?limit=1")
+            call()
+        } catch (e: Exception) {
+            Timber.e(e, "请求失败")
+            null
+        } finally {
+            isRequestInProgress = false
+        }
+    }
 
-            // 只读取一次响应体
+    suspend fun deleteSave(): Boolean? {
+        return safeRequest {
+            Timber.d("调用函数：deleteSave()")
+            val response = request.get(baseUrl + "classes/_GameSave?limit=1")
             val responseBody = response.body?.string()
 
-            // 如果响应体不为空
             if (responseBody != null) {
                 val jsonObject = JSONObject(responseBody)
                 val results = jsonObject.getJSONArray("results")
+                val objectId = results.getJSONObject(0).getJSONObject("gameFile").getString("objectId")
+                val savesDeleteData = request.delete(baseUrl + "files/$objectId")
+                Timber.d(savesDeleteData.toString())
+            } else {
+                Timber.e("响应体为空")
+            }
+            true
+        }
+    }
 
-                // 如果 results 数组不为空，返回第一个元素
+    suspend fun uploadSave(saveData: ByteArray): Boolean? {
+        return safeRequest {
+            Timber.d("调用函数：uploadSave()")
+            val response = request.get(baseUrl + "classes/_GameSave?limit=1")
+            val jsonObject = JSONObject(response.body?.string() ?: "")
+            val result = jsonObject.getJSONArray("results").getJSONObject(0)
+            val objectId = result.getString("objectId")
+            val userObjectId = result.getJSONObject("user").getString("objectId")
+            var summaryData = Base64.getDecoder().decode(result.getString("summary"))
+
+            Timber.d("现summary喵：${result.getString("summary")}")
+            summaryData[7] = 81  // 修改版本号
+            val updatedSummary = Base64.getEncoder().encodeToString(summaryData)
+            Timber.d("新summary喵：$updatedSummary")
+
+            // 计算md5校验值
+            val md5hash = MessageDigest.getInstance("MD5")
+            md5hash.update(saveData)
+            val checksum = md5hash.digest().joinToString("") { "%02x".format(it) }
+            Timber.d("校验值saveChecksum喵：$checksum")
+
+            // 获取fileToken
+            val fileTokenResponse = request.post(
+                baseUrl + "fileTokens",
+                RequestBody.create(
+                    null, """
+                {
+                    "name": ".save",
+                    "__type": "File",
+                    "ACL": { "$userObjectId": { "read": true, "write": true } },
+                    "prefix": "gamesaves",
+                    "metaData": {
+                        "size": ${saveData.size},
+                        "_checksum": "$checksum",
+                        "prefix": "gamesaves"
+                    }
+                }
+            """.trimIndent()
+                )
+            )
+            val fileTokenJson = JSONObject(fileTokenResponse.body?.string() ?: "")
+            val tokenKey =
+                Base64.getEncoder().encodeToString(fileTokenJson.getString("key").toByteArray())
+            val newObjectId = fileTokenJson.getString("objectId")
+            val authorization = "UpToken ${fileTokenJson.getString("token")}"
+
+            Timber.d("tokenKey: $tokenKey")
+            Timber.d("newObjectId: $newObjectId")
+            Timber.d("authorization: $authorization")
+
+            // 获取uploadId
+            val uploadIdResponse = request.post(
+                "https://upload.qiniup.com/buckets/rAK3Ffdi/objects/$tokenKey/uploads",
+                RequestBody.create(null, "{}")
+            )
+            val uploadId = JSONObject(uploadIdResponse.body?.string() ?: "").getString("uploadId")
+            Timber.d("uploadId: $uploadId")
+
+            // 上传存档数据
+            val uploadResponse = request.put(
+                "https://upload.qiniup.com/buckets/rAK3Ffdi/objects/$tokenKey/uploads/$uploadId/1",
+                RequestBody.create(null, saveData)
+            )
+            val etag = JSONObject(uploadResponse.body?.string() ?: "").getString("etag")
+            Timber.d("etag: $etag")
+
+            // 完成上传
+            request.post(
+                "https://upload.qiniup.com/buckets/rAK3Ffdi/objects/$tokenKey/uploads/$uploadId",
+                RequestBody.create(
+                    null, """
+                {
+                    "parts": [{ "partNumber": 1, "etag": "$etag" }]
+                }
+            """.trimIndent()
+                )
+            )
+
+            // 更新存档信息
+            request.put(
+                baseUrl + "classes/_GameSave/$objectId?",
+                RequestBody.create(
+                    null, """
+                {
+                    "summary": "$updatedSummary",
+                    "modifiedAt": { "__type": "Date", "iso": "${isoDate}" },
+                    "gameFile": { "__type": "Pointer", "className": "_File", "objectId": "$newObjectId" },
+                    "ACL": { "$userObjectId": { "read": true, "write": true } },
+                    "user": { "__type": "Pointer", "className": "_User", "objectId": "$userObjectId" }
+                }
+            """.trimIndent()
+                )
+            )
+
+            // 删除旧存档
+            request.delete(baseUrl + "files/$objectId")
+
+            true
+        }
+    }
+
+    suspend fun getSave(): JSONObject? {
+        return safeRequest {
+            Timber.d("调用函数：getSave()")
+            val response = request.get(baseUrl + "classes/_GameSave?limit=1")
+            val responseBody = response.body?.string()
+
+            if (responseBody != null) {
+                val jsonObject = JSONObject(responseBody)
+                val results = jsonObject.getJSONArray("results")
                 if (results.length() > 0) {
                     results.getJSONObject(0)
                 } else {
@@ -140,40 +243,51 @@ class PhigrosCloud(
                 Timber.e("响应体为空")
                 null
             }
-
-        } catch (e: Exception) {
-            Timber.e(e, "获取存档失败")
-            null
-        } finally {
-            isRequestInProgress = false
         }
     }
-    // 解包 summary 数据
-    private fun unpackSummary(summaryData: ByteArray): List<Any> {
-        val buffer = ByteBuffer.wrap(summaryData)
+}
 
-        // 提取不同类型的数据，基于 Python 中 unpack 的模式
-        val saveVersion = buffer.short.toInt() // =B
-        val challenge = buffer.short.toInt()  // =H
-        val rks = buffer.float // =f
-        val gameVersion = buffer.float // =f
-        val avatar = ByteArray(buffer.get().toInt())  // =x%s 处理字节数组
-        buffer.get(avatar) // 读取头像数据
+fun getSummary(summaryBase64: String): Map<String, Any> {
+    val summaryBytes = Base64.getDecoder().decode(summaryBase64)
+    // 获取头像字符串的长度，即原字节数组的第8个字节（索引8）
+    val avatarLength = summaryBytes[8].toInt() and 0xFF
 
-        // 创建一个 List 返回相应数据
-        val result = mutableListOf<Any>()
-        result.add(saveVersion)
-        result.add(challenge)
-        result.add(rks)
-        result.add(gameVersion)
-        result.add(avatar)
+    // 创建ByteBuffer并设置字节顺序为小端（与Python的struct.unpack '=' 一致）
+    val byteBuffer = ByteBuffer.wrap(summaryBytes).order(ByteOrder.LITTLE_ENDIAN)
 
-        // 接下来的数据将按照题目中的要求进行解包
-        result.add(buffer.short) // EZ难度评级
-        result.add(buffer.short) // HD难度评级
-        result.add(buffer.short) // IN难度评级
-        result.add(buffer.short) // AT难度评级
+    // 按顺序解析字段
+    val saveVersion = byteBuffer.get().toInt() and 0xFF         // 1字节，无符号
+    val challenge = byteBuffer.short.toInt() and 0xFFFF         // 2字节，无符号短整型
+    val rks = byteBuffer.float                                  // 4字节，浮点数
+    val gameVersion = byteBuffer.get().toInt() and 0xFF          // 1字节，无符号
+    byteBuffer.get()                                             // 跳过1字节填充（x）
 
-        return result
+    // 读取动态长度的头像字符串
+    val avatarBytes = ByteArray(avatarLength)
+    byteBuffer.get(avatarBytes)
+    val avatar = String(avatarBytes, Charsets.UTF_8)
+
+    // 读取12个无符号短整型（H）作为评级数据
+    val ratings = mutableListOf<Int>()
+    repeat(12) {
+        ratings.add(byteBuffer.short.toInt() and 0xFFFF)
     }
+
+    // 将评级数据分为四个部分
+    val EZ = ratings.subList(0, 3)
+    val HD = ratings.subList(3, 6)
+    val IN = ratings.subList(6, 9)
+    val AT = ratings.subList(9, 12)
+
+    return mapOf(
+        "saveVersion" to saveVersion,
+        "challenge" to challenge,
+        "rks" to rks,
+        "gameVersion" to gameVersion,
+        "avatar" to avatar,
+        "EZ" to EZ,
+        "HD" to HD,
+        "IN" to IN,
+        "AT" to AT
+    )
 }
