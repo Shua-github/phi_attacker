@@ -209,13 +209,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         return """
-        |卡密:${encryptToken.trim()}
-        |存档URL:${savesURL.trim()}
-        |rks:${savesSummary.get("rks").toString().trim()}
-        |EZ:${difficultyDataMap["EZ"].toString().trim()}
-        |HD:${difficultyDataMap["HD"].toString().trim()}
-        |IN:${difficultyDataMap["IN"].toString().trim()}
-        |AT:${difficultyDataMap["AT"].toString().trim()}
+        |卡密: ${encryptToken.trim()}
+        |存档URL: ${savesURL.trim()}
+        |rks: ${savesSummary.get("rks").toString().trim()}
+        |EZ: ${difficultyDataMap["EZ"].toString().trim()}
+        |HD: ${difficultyDataMap["HD"].toString().trim()}
+        |IN: ${difficultyDataMap["IN"].toString().trim()}
+        |AT: ${difficultyDataMap["AT"].toString().trim()}
         """.trimMargin("|")
     }
 
