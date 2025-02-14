@@ -1,5 +1,6 @@
 package com.phigros.attacker
 
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
@@ -8,7 +9,6 @@ import android.os.Environment
 import android.os.IBinder
 import android.os.RemoteException
 import android.util.Base64
-import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -133,7 +133,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun clearCache() {
+    private fun clearCache() {
         try {
             cacheManager.clearCache() // 调用 CacheManager 的 clearCache 方法
             Toast.makeText(this, "缓存已清理", Toast.LENGTH_SHORT).show()
@@ -162,7 +162,7 @@ class MainActivity : AppCompatActivity() {
             sessionToken = decrypt(encryptToken, key = encryptionKey).trim()
         } else {
             // 获取token
-            val command = "cat ${Environment.getExternalStorageDirectory().getPath()}/Android/data/com.PigeonGames.Phigros/files/.userdata"
+            val command = "cat ${Environment.getExternalStorageDirectory().path}/Android/data/com.PigeonGames.Phigros/files/.userdata"
             val result = exec(command)
 
             if (result.trim().isEmpty()) throw Exception("返回结果为空")
@@ -211,7 +211,7 @@ class MainActivity : AppCompatActivity() {
         return """
         |卡密: ${encryptToken.trim()}
         |存档URL: ${savesURL.trim()}
-        |rks: ${savesSummary.get("rks").toString().trim()}
+        |rks: ${savesSummary["rks"].toString().trim()}
         |EZ: ${difficultyDataMap["EZ"].toString().trim()}
         |HD: ${difficultyDataMap["HD"].toString().trim()}
         |IN: ${difficultyDataMap["IN"].toString().trim()}
@@ -261,20 +261,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        @SuppressLint("GetInstance")
         @Throws(Exception::class)
         fun encrypt(data: String, key: String): String {
             require(key.length == 16) { "AES 密钥长度必须为 16 字节" }
             val secretKey = SecretKeySpec(key.toByteArray(StandardCharsets.UTF_8), "AES")
-            val cipher = Cipher.getInstance("AES")
+            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
             cipher.init(Cipher.ENCRYPT_MODE, secretKey)
             val encryptedData = cipher.doFinal(data.toByteArray(StandardCharsets.UTF_8))
             return Base64.encodeToString(encryptedData, Base64.DEFAULT)
         }
 
+        @SuppressLint("GetInstance")
         fun decrypt(data: String, key: String): String {
             require(key.length == 16) { "AES 密钥长度必须为 16 字节" }
             val secretKey = SecretKeySpec(key.toByteArray(StandardCharsets.UTF_8), "AES")
-            val cipher = Cipher.getInstance("AES")
+            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey)
 
             val encryptedData = Base64.decode(data, Base64.DEFAULT)

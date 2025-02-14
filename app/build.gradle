@@ -10,7 +10,7 @@ android {
     defaultConfig {
         applicationId "com.phigros.attacker"
         minSdk 26
-        targetSdk 35
+        targetSdk 33
         versionCode 1
         versionName "0.1.0"
         buildConfigField "String", "OUT_ENCRYPTION_KEY", ""
@@ -20,7 +20,7 @@ android {
 
     buildFeatures {
         buildConfig true    // 开启BuildConfig类的生成
-        aidl true           // 启用aidl
+        aidl true // 启用aidl
     }
 
     buildTypes {

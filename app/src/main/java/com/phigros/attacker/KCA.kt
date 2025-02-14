@@ -12,7 +12,7 @@ import java.util.Base64
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-val isoDate = Instant.now().atOffset(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT)
+val isoDate = Instant.now().atOffset(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT)!!
 
 class PigeonRequest(
     private val sessionToken: String,
@@ -28,7 +28,7 @@ class PigeonRequest(
     )
 ) {
 
-    fun request(method: String, url: String, headers: Map<String, String>? = null, body: RequestBody? = null): Response {
+    private fun request(method: String, url: String, headers: Map<String, String>? = null, body: RequestBody? = null): Response {
         val finalHeaders = headers ?: this.headers
         val requestBuilder = Request.Builder().url(url)
         finalHeaders.forEach { (key, value) ->
@@ -73,20 +73,15 @@ class PigeonRequest(
 }
 
 class PhigrosCloud(
-    private val sessionToken: String,
-    private val client: OkHttpClient? = null
+    sessionToken: String,
+    client: OkHttpClient? = null
 ) {
 
-    private val createClient: Boolean
-    private val request: PigeonRequest
+    private val createClient: Boolean = client == null
+    private val request: PigeonRequest = PigeonRequest(sessionToken, client ?: OkHttpClient())
     private val baseUrl = "https://rak3ffdi.cloud.tds1.tapapis.cn/1.1/"
 
-    init {
-        createClient = client == null
-        this.request = PigeonRequest(sessionToken, client ?: OkHttpClient())
-    }
-
-    var isRequestInProgress = false
+    private var isRequestInProgress = false
 
     private suspend fun <T> safeRequest(call: suspend () -> T): T? {
         if (isRequestInProgress) {
@@ -131,7 +126,7 @@ class PhigrosCloud(
             val result = jsonObject.getJSONArray("results").getJSONObject(0)
             val objectId = result.getString("objectId")
             val userObjectId = result.getJSONObject("user").getString("objectId")
-            var summaryData = Base64.getDecoder().decode(result.getString("summary"))
+            val summaryData = Base64.getDecoder().decode(result.getString("summary"))
 
             Timber.d("现summary喵：${result.getString("summary")}")
             summaryData[7] = 81  // 修改版本号
@@ -208,7 +203,7 @@ class PhigrosCloud(
                     null, """
                 {
                     "summary": "$updatedSummary",
-                    "modifiedAt": { "__type": "Date", "iso": "${isoDate}" },
+                    "modifiedAt": { "__type": "Date", "iso": "$isoDate" },
                     "gameFile": { "__type": "Pointer", "className": "_File", "objectId": "$newObjectId" },
                     "ACL": { "$userObjectId": { "read": true, "write": true } },
                     "user": { "__type": "Pointer", "className": "_User", "objectId": "$userObjectId" }
@@ -273,21 +268,15 @@ fun getSummary(summaryBase64: String): Map<String, Any> {
         ratings.add(byteBuffer.short.toInt() and 0xFFFF)
     }
 
-    // 将评级数据分为四个部分
-    val EZ = ratings.subList(0, 3)
-    val HD = ratings.subList(3, 6)
-    val IN = ratings.subList(6, 9)
-    val AT = ratings.subList(9, 12)
-
     return mapOf(
         "saveVersion" to saveVersion,
         "challenge" to challenge,
         "rks" to rks,
         "gameVersion" to gameVersion,
         "avatar" to avatar,
-        "EZ" to EZ,
-        "HD" to HD,
-        "IN" to IN,
-        "AT" to AT
+        "EZ" to ratings.subList(0, 3),
+        "HD" to ratings.subList(3, 6),
+        "IN" to ratings.subList(6, 9),
+        "AT" to ratings.subList(9, 12)
     )
 }
