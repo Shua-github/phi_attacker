@@ -26,6 +26,8 @@ import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import timber.log.Timber
 import org.json.JSONObject
+import com.chaquo.python.Python
+import com.chaquo.python.android.AndroidPlatform
 
 class MainActivity : AppCompatActivity() {
 
@@ -46,6 +48,9 @@ class MainActivity : AppCompatActivity() {
         findViews()
         addEvents()
         initShizuku()
+        if (!Python.isStarted()) {
+            Python.start(AndroidPlatform(this))
+        }
     }
 
     private fun initShizuku() {
@@ -81,6 +86,10 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Shizuku服务被终止", Toast.LENGTH_SHORT).show()
     }
 
+    private fun updateFileContentTextView(displayText: String) {
+        fileContentTextView.text = displayText
+    }
+
     private fun addEvents() {
         Timber.plant(Timber.DebugTree())
 
@@ -96,21 +105,26 @@ class MainActivity : AppCompatActivity() {
         // 读取文件按钮点击事件
         readFileButton.setOnClickListener {
             lifecycleScope.launch {
-                if (iUserService == null) {
-                    Toast.makeText(this@MainActivity, "请先连接Shizuku服务", Toast.LENGTH_SHORT).show()
-                    return@launch
-                }
-
-                try {
-                    val displayText = getDisplayText()
-
-                    // 更新fileContentTextView.text
-                    fileContentTextView.text = displayText
-
+                // 处理缓存情况
+                val displayText = try {
+                    if (cacheManager.isCache()) {
+                        getDisplayText()
+                    } else {
+                        if (iUserService == null) {
+                            Toast.makeText(this@MainActivity, "请先连接Shizuku服务", Toast.LENGTH_SHORT).show()
+                            return@launch // 如果没有连接服务，直接返回
+                        } else {
+                            getDisplayText() // 正常情况下获取显示文本
+                        }
+                    }
                 } catch (e: Exception) {
-                    fileContentTextView.text = "Phigros未安装或未登录云存档"
+                    updateFileContentTextView("Phigros未安装或未登录云存档")
                     e.printStackTrace()
+                    return@launch // 异常时直接返回
                 }
+
+                // 更新 UI
+                updateFileContentTextView(displayText.trim())
             }
         }
 
@@ -146,47 +160,58 @@ class MainActivity : AppCompatActivity() {
     private suspend fun getDisplayText(): String {
         val tokenFile = cacheManager.getTokenFile()
         val savesFile = cacheManager.getSavesFile()
+        val savesBase64File = cacheManager.getSavesBase64File()
 
-        val sessionToken: String
-        val savesURL: String
-        val encryptToken: String
-        val savesSummary: Map<String, Any>
+        val sessionToken: String  // 初始为空字符串
+        val savesURL: String      // 初始为空字符串
+        val encryptToken: String  // 初始为空字符串
+        val savesSummary: Map<String, Any>  // 初始为空Map
+        val savesBase64: String
+
+        // 提取一个统一的函数来处理从 JSON 中获取 URL 和 summary
+        fun extractSavesData(savesJSON: JSONObject): Pair<String, Map<String, Any>> {
+            val url = savesJSON.getJSONObject("gameFile").getString("url").trim()
+            val summary = getSummary(savesJSON.getString("summary"))
+            return Pair(url, summary)
+        }
 
         // 获取token逻辑
-        if (tokenFile.exists() && savesFile.exists()) {
+        if (tokenFile.exists() && savesFile.exists() && savesBase64File.exists()) {
             // 读取缓存
             encryptToken = tokenFile.readText()
             val savesJSON = JSONObject(savesFile.readText())
-            savesURL = savesJSON.getJSONObject("gameFile").getString("url").trim()
-            savesSummary = getSummary(savesJSON.getString("summary"))
+            val (url, summary) = extractSavesData(savesJSON)
+            savesURL = url
+            savesSummary = summary
             sessionToken = decrypt(encryptToken, key = encryptionKey).trim()
+            savesBase64 = savesBase64File.readText()
         } else {
             // 获取token
-            val command = "cat ${Environment.getExternalStorageDirectory().path}/Android/data/com.PigeonGames.Phigros/files/.userdata"
-            val result = exec(command)
+            val result = exec("cat ${Environment.getExternalStorageDirectory().path}/Android/data/com.PigeonGames.Phigros/files/.userdata").trim()
+            if (result.isEmpty()) throw Exception("返回结果为空")
 
-            if (result.trim().isEmpty()) throw Exception("返回结果为空")
-
-            val resultMap: Map<String, Any>? = Gson().fromJson(result, object : TypeToken<Map<String, Any>>() {}.type)
-            sessionToken = (resultMap?.get("sessionToken") as? String).toString().trim()
+            val resultMap: Map<String, Any> = Gson().fromJson(result, object : TypeToken<Map<String, Any>>() {}.type)
+            sessionToken = (resultMap["sessionToken"] as? String).orEmpty().trim()
 
             encryptToken = encrypt(sessionToken, encryptionKey).trim()
-            cacheManager.cacheToken(encryptToken.trim())
+            cacheManager.cacheToken(encryptToken)
+
             // 获得云存档
             val phigrosCloud = PhigrosCloud(sessionToken = sessionToken)
-            val saveData = withContext(Dispatchers.IO) {
-                phigrosCloud.getSave()
-            }
+            val saveData = withContext(Dispatchers.IO) { phigrosCloud.getSave() }
 
             if (saveData != null) {
-                savesURL = saveData.getJSONObject("gameFile").getString("url").trim()
-                savesSummary = getSummary(saveData.getString("summary"))
+                val (url, summary) = extractSavesData(saveData)
+                savesURL = url
+                savesSummary = summary
                 cacheManager.cacheSaves(saveData.toString().trim())
-            } else
+                savesBase64 = withContext(Dispatchers.IO) { phigrosCloud.getSaveFileAsBase64(savesURL).toString() }
+                cacheManager.cacheSavesBase64(savesBase64)
+            } else {
                 throw Exception("存档数据为空")
+            }
         }
 
-        // 定义一个辅助函数来处理转换
         fun formatSaveData(data: List<Any>): String {
             return data.take(3).mapIndexed { index, value ->
                 val strValue = value.toString()
@@ -208,16 +233,22 @@ class MainActivity : AppCompatActivity() {
             formatSaveData(data)
         }
 
+        // 通过循环生成难度相关的输出，而不是直接使用难度名称
+        val formattedDifficultyData = difficultyList.joinToString("\n") { difficulty ->
+            "$difficulty: ${difficultyDataMap[difficulty].toString().trim()}"
+        }
+
+        val test = callPythonGetSaves(savesBase64)
+
         return """
         |卡密: ${encryptToken.trim()}
         |存档URL: ${savesURL.trim()}
         |rks: ${savesSummary["rks"].toString().trim()}
-        |EZ: ${difficultyDataMap["EZ"].toString().trim()}
-        |HD: ${difficultyDataMap["HD"].toString().trim()}
-        |IN: ${difficultyDataMap["IN"].toString().trim()}
-        |AT: ${difficultyDataMap["AT"].toString().trim()}
+        |$formattedDifficultyData
+        |test:${test}
         """.trimMargin("|")
     }
+
 
     @Throws(RemoteException::class)
     private suspend fun exec(command: String): String {
@@ -264,6 +295,10 @@ class MainActivity : AppCompatActivity() {
         @SuppressLint("GetInstance")
         @Throws(Exception::class)
         fun encrypt(data: String, key: String): String {
+            if (key.isEmpty()) {
+                return data // 如果 key 为空，直接返回原始数据
+            }
+
             require(key.length == 16) { "AES 密钥长度必须为 16 字节" }
             val secretKey = SecretKeySpec(key.toByteArray(StandardCharsets.UTF_8), "AES")
             val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
@@ -274,6 +309,10 @@ class MainActivity : AppCompatActivity() {
 
         @SuppressLint("GetInstance")
         fun decrypt(data: String, key: String): String {
+            if (key.isEmpty()) {
+                return data // 如果 key 为空，直接返回原始数据
+            }
+
             require(key.length == 16) { "AES 密钥长度必须为 16 字节" }
             val secretKey = SecretKeySpec(key.toByteArray(StandardCharsets.UTF_8), "AES")
             val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
@@ -286,7 +325,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // CacheManager class to handle token and saves file
+
     class CacheManager(private val cacheDir: File) {
 
         fun getTokenFile(): File {
@@ -295,6 +334,15 @@ class MainActivity : AppCompatActivity() {
 
         fun getSavesFile(): File {
             return File(cacheDir, "cached_saves.json")
+        }
+
+        // 获取 cached_saves_base64.txt 文件
+        fun getSavesBase64File(): File {
+            return File(cacheDir, "cached_saves_base64.txt")
+        }
+
+        fun isCache(): Boolean {
+            return getTokenFile().exists() && getSavesFile().exists()
         }
 
         fun cacheToken(encryptedToken: String) {
@@ -307,16 +355,26 @@ class MainActivity : AppCompatActivity() {
             savesFile.writeText(saveData)
         }
 
-        // 新增：清除缓存方法
+        // 使用 android.util.Base64 缓存 Base64 编码的存档数据
+        fun cacheSavesBase64(saveData: String) {
+            val savesBase64File = getSavesBase64File()
+            savesBase64File.writeText(saveData)
+        }
+
+        // 清除缓存
         fun clearCache() {
             val tokenFile = getTokenFile()
             val savesFile = getSavesFile()
+            val savesBase64File = getSavesBase64File()
 
             if (tokenFile.exists()) {
                 tokenFile.delete()
             }
             if (savesFile.exists()) {
                 savesFile.delete()
+            }
+            if (savesBase64File.exists()) {
+                savesBase64File.delete()
             }
         }
     }

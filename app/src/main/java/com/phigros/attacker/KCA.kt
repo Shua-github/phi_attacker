@@ -1,6 +1,7 @@
 package com.phigros.attacker
 
 import okhttp3.*
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import timber.log.Timber
 import java.io.IOException
@@ -38,8 +39,8 @@ class PigeonRequest(
         when (method.uppercase()) {
             "GET" -> requestBuilder.get()
             "DELETE" -> requestBuilder.delete()
-            "POST" -> requestBuilder.post(body ?: RequestBody.create(null, ""))
-            "PUT" -> requestBuilder.put(body ?: RequestBody.create(null, ""))
+            "POST" -> requestBuilder.post(body ?: "".toRequestBody(null))
+            "PUT" -> requestBuilder.put(body ?: "".toRequestBody(null))
             else -> throw IllegalArgumentException("Unsupported HTTP method: $method")
         }
 
@@ -118,107 +119,6 @@ class PhigrosCloud(
         }
     }
 
-    suspend fun uploadSave(saveData: ByteArray): Boolean? {
-        return safeRequest {
-            Timber.d("调用函数：uploadSave()")
-            val response = request.get(baseUrl + "classes/_GameSave?limit=1")
-            val jsonObject = JSONObject(response.body?.string() ?: "")
-            val result = jsonObject.getJSONArray("results").getJSONObject(0)
-            val objectId = result.getString("objectId")
-            val userObjectId = result.getJSONObject("user").getString("objectId")
-            val summaryData = Base64.getDecoder().decode(result.getString("summary"))
-
-            Timber.d("现summary喵：${result.getString("summary")}")
-            summaryData[7] = 81  // 修改版本号
-            val updatedSummary = Base64.getEncoder().encodeToString(summaryData)
-            Timber.d("新summary喵：$updatedSummary")
-
-            // 计算md5校验值
-            val md5hash = MessageDigest.getInstance("MD5")
-            md5hash.update(saveData)
-            val checksum = md5hash.digest().joinToString("") { "%02x".format(it) }
-            Timber.d("校验值saveChecksum喵：$checksum")
-
-            // 获取fileToken
-            val fileTokenResponse = request.post(
-                baseUrl + "fileTokens",
-                RequestBody.create(
-                    null, """
-                {
-                    "name": ".save",
-                    "__type": "File",
-                    "ACL": { "$userObjectId": { "read": true, "write": true } },
-                    "prefix": "gamesaves",
-                    "metaData": {
-                        "size": ${saveData.size},
-                        "_checksum": "$checksum",
-                        "prefix": "gamesaves"
-                    }
-                }
-            """.trimIndent()
-                )
-            )
-            val fileTokenJson = JSONObject(fileTokenResponse.body?.string() ?: "")
-            val tokenKey =
-                Base64.getEncoder().encodeToString(fileTokenJson.getString("key").toByteArray())
-            val newObjectId = fileTokenJson.getString("objectId")
-            val authorization = "UpToken ${fileTokenJson.getString("token")}"
-
-            Timber.d("tokenKey: $tokenKey")
-            Timber.d("newObjectId: $newObjectId")
-            Timber.d("authorization: $authorization")
-
-            // 获取uploadId
-            val uploadIdResponse = request.post(
-                "https://upload.qiniup.com/buckets/rAK3Ffdi/objects/$tokenKey/uploads",
-                RequestBody.create(null, "{}")
-            )
-            val uploadId = JSONObject(uploadIdResponse.body?.string() ?: "").getString("uploadId")
-            Timber.d("uploadId: $uploadId")
-
-            // 上传存档数据
-            val uploadResponse = request.put(
-                "https://upload.qiniup.com/buckets/rAK3Ffdi/objects/$tokenKey/uploads/$uploadId/1",
-                RequestBody.create(null, saveData)
-            )
-            val etag = JSONObject(uploadResponse.body?.string() ?: "").getString("etag")
-            Timber.d("etag: $etag")
-
-            // 完成上传
-            request.post(
-                "https://upload.qiniup.com/buckets/rAK3Ffdi/objects/$tokenKey/uploads/$uploadId",
-                RequestBody.create(
-                    null, """
-                {
-                    "parts": [{ "partNumber": 1, "etag": "$etag" }]
-                }
-            """.trimIndent()
-                )
-            )
-
-            // 更新存档信息
-            request.put(
-                baseUrl + "classes/_GameSave/$objectId?",
-                RequestBody.create(
-                    null, """
-                {
-                    "summary": "$updatedSummary",
-                    "modifiedAt": { "__type": "Date", "iso": "$isoDate" },
-                    "gameFile": { "__type": "Pointer", "className": "_File", "objectId": "$newObjectId" },
-                    "ACL": { "$userObjectId": { "read": true, "write": true } },
-                    "user": { "__type": "Pointer", "className": "_User", "objectId": "$userObjectId" }
-                }
-            """.trimIndent()
-                )
-            )
-
-            // 删除旧存档
-            request.delete(baseUrl + "files/$objectId")
-
-            true
-        }
-    }
-
     suspend fun getSave(): JSONObject? {
         return safeRequest {
             Timber.d("调用函数：getSave()")
@@ -238,6 +138,26 @@ class PhigrosCloud(
                 Timber.e("响应体为空")
                 null
             }
+        }
+    }
+
+    // 新增函数，用于获取存档文件并返回Base64编码
+    suspend fun getSaveFileAsBase64(url: String): String? {
+        return safeRequest {
+            // 发送 GET 请求以获取存档文件
+            val response = request.get(url)
+
+            // 获取响应体
+            val responseBody: ResponseBody = response.body ?: throw IOException("空的响应体")
+
+            // 获取存档文件的二进制数据
+            val fileBytes = responseBody.bytes()
+
+            // 将文件二进制数据转换为 Base64 字符串
+            val base64Encoded = Base64.getEncoder().encodeToString(fileBytes)
+
+            // 返回 Base64 编码的字符串
+            base64Encoded
         }
     }
 }
