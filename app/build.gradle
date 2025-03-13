@@ -58,6 +58,7 @@ android {
 }
 
 dependencies {
+    implementation 'io.reactivex.rxjava2:rxandroid:2.1.1'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4'
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'com.google.android.material:material:1.12.0'
@@ -67,6 +68,13 @@ dependencies {
     implementation "com.squareup.okhttp3:okhttp:4.12.0"
     implementation "com.jakewharton.timber:timber:5.0.1"
     implementation "com.github.ajalt:timberkt:1.5.1"
+    implementation 'com.google.firebase:firebase-crashlytics-buildtools:3.0.3'
+    implementation fileTree(dir: 'libs', include: ['*.aar'])
+    // 数据存储
+    implementation 'com.taptap:lc-storage-android:8.2.24'
+    // 即时通讯
+    implementation 'com.taptap:lc-realtime-android:8.2.24'
+    implementation 'io.reactivex.rxjava2:rxandroid:2.1.1'
 
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'

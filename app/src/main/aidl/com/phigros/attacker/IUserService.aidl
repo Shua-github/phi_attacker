@@ -21,6 +21,9 @@ interface IUserService {
      * 执行数组中分离的命令
      */
     String execArr(in String[] command) = 3;
+
+    // 获取文件内容（根据文件路径）
+    String getFileText(in String filePath) = 4;
 }
 
 

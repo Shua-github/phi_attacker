@@ -78,7 +78,6 @@ class PhigrosCloud(
     client: OkHttpClient? = null
 ) {
 
-    private val createClient: Boolean = client == null
     private val request: PigeonRequest = PigeonRequest(sessionToken, client ?: OkHttpClient())
     private val baseUrl = "https://rak3ffdi.cloud.tds1.tapapis.cn/1.1/"
 
