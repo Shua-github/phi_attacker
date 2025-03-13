@@ -30,7 +30,6 @@ import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import com.tds.common.entities.TapConfig
 import com.tapsdk.bootstrap.TapBootstrap
-import com.tapsdk.bootstrap.TapBootstrap.setPreferredLanguage
 import com.tapsdk.bootstrap.account.TDSUser
 import com.tapsdk.bootstrap.exceptions.TapError
 import com.tds.common.models.TapRegionType
@@ -54,24 +53,25 @@ class MainActivity : AppCompatActivity() {
         findViews()
         addEvents()
         initShizuku()
+
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(this))
         }
+
         val tdsConfig = TapConfig.Builder()
-            .withAppContext(this) // Context 上下文
-            .withClientId("rAK3FfdieFob2Nn8Am") // 必须，开发者中心对应 Client ID
-            .withClientToken("Qr9AEqtuoSVS3zeD6iVbM4ZC0AtkJcQ89tywVyi0") // 必须，开发者中心对应 Client Token
+            .withAppContext(this)
+            .withClientId("rAK3FfdieFob2Nn8Am")
+            .withClientToken("Qr9AEqtuoSVS3zeD6iVbM4ZC0AtkJcQ89tywVyi0")
             .withServerUrl("https://rak3ffdi.cloud.tds1.tapapis.cn/")
-            .withRegionType(TapRegionType.CN) // TapRegionType.CN：中国大陆，TapRegionType.IO：其他国家或地区
-            .build();
+            .withRegionType(TapRegionType.CN)
+            .build()
 
         TapBootstrap.init(this@MainActivity, tdsConfig)
     }
 
     private fun initShizuku() {
         Shizuku.addRequestPermissionResultListener { _, grantResult ->
-            val granted = grantResult == PackageManager.PERMISSION_GRANTED
-            showToast(if (granted) "Shizuku授权成功" else "Shizuku授权失败")
+            showToast(if (grantResult == PackageManager.PERMISSION_GRANTED) "Shizuku授权成功" else "Shizuku授权失败")
         }
         Shizuku.addBinderReceivedListener(onBinderReceivedListener)
         Shizuku.addBinderDeadListener(onBinderDeadListener)
@@ -121,9 +121,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         readFileButton.setOnClickListener {
-            lifecycleScope.launch {
-                handleFileReading()
-            }
+            lifecycleScope.launch { handleFileReading() }
         }
 
         connectShizukuButton.setOnClickListener {
@@ -153,9 +151,7 @@ class MainActivity : AppCompatActivity() {
                     getDisplayText()
                 }
             }
-
             updateFileContentTextView(displayText.trim())
-
         } catch (e: Exception) {
             updateFileContentTextView("Phigros未安装或未登录云存档")
             Timber.e(e)
@@ -177,6 +173,31 @@ class MainActivity : AppCompatActivity() {
         """.trimMargin("|")
     }
 
+    private suspend fun fetchSaveData(sessionToken: String): SaveData {
+        val encryptToken = encrypt(sessionToken, encryptionKey).trim()
+
+        // 缓存加密后的 token
+        cacheManager.cacheToken(encryptToken)
+
+        val phigrosCloud = PhigrosCloud(sessionToken)
+
+        // 获取保存数据
+        val saveData = withContext(Dispatchers.IO) { phigrosCloud.getSave() }
+
+        if (saveData != null) {
+            val (url, summary) = extractSavesData(saveData)
+            val savesBase64 = withContext(Dispatchers.IO) { phigrosCloud.getSaveFileAsBase64(url).toString() }
+
+            // 缓存保存数据和 Base64 数据
+            cacheManager.cacheSaves(saveData.toString().trim())
+            cacheManager.cacheSavesBase64(savesBase64)
+
+            return SaveData(sessionToken, encryptToken, url, summary, savesBase64)
+        } else {
+            throw Exception("存档数据为空")
+        }
+    }
+
     private suspend fun fetchDataFromCacheOrNetwork(): SaveData {
         val tokenFile = cacheManager.getTokenFile()
         val savesFile = cacheManager.getSavesFile()
@@ -191,30 +212,12 @@ class MainActivity : AppCompatActivity() {
             val savesBase64 = savesBase64File.readText()
 
             SaveData(sessionToken, encryptToken, url, summary, savesBase64)
-
         } else {
             // 网络获取数据
             val result = getFiletext("${Environment.getExternalStorageDirectory().path}/Android/data/com.PigeonGames.Phigros/files/.userdata").trim()
-
             val resultMap: Map<String, Any> = Gson().fromJson(result, object : TypeToken<Map<String, Any>>() {}.type)
             val sessionToken = (resultMap["sessionToken"] as? String).orEmpty().trim()
-            val encryptToken = encrypt(sessionToken, encryptionKey).trim()
-
-            cacheManager.cacheToken(encryptToken)
-
-            val phigrosCloud = PhigrosCloud(sessionToken)
-            val saveData = withContext(Dispatchers.IO) { phigrosCloud.getSave() }
-
-            if (saveData != null) {
-                val (url, summary) = extractSavesData(saveData)
-                val savesBase64 = withContext(Dispatchers.IO) { phigrosCloud.getSaveFileAsBase64(url).toString() }
-                cacheManager.cacheSaves(saveData.toString().trim())
-                cacheManager.cacheSavesBase64(savesBase64)
-
-                SaveData(sessionToken, encryptToken, url, summary, savesBase64)
-            } else {
-                throw Exception("存档数据为空")
-            }
+            return fetchSaveData(sessionToken)
         }
     }
 
@@ -227,19 +230,27 @@ class MainActivity : AppCompatActivity() {
     private fun formatDifficultyData(savesSummary: Map<String, Any>): String {
         val difficultyList = listOf("EZ", "HD", "IN", "AT")
         return difficultyList.joinToString("\n") { difficulty ->
-            "$difficulty: ${formatSaveData(savesSummary[difficulty])}"
-        }
-    }
-
-    private fun formatSaveData(data: Any?): String {
-        val dataList = data as? List<Any> ?: return "No data available"
-        return dataList.take(3).joinToString(", ") { value ->
-            when (value) {
-                is String -> value
-                else -> value.toString()
+            val data = savesSummary[difficulty] as? List<Any>  // 安全转换
+            if (data != null) {
+                "$difficulty: ${formatSaveData(data)}"
+            } else {
+                "$difficulty: No data"
             }
         }
     }
+
+    private fun formatSaveData(data: List<Any>): String {
+        return data.take(3).mapIndexed { index, value ->
+            val strValue = value.toString()
+            when (index) {
+                0 -> "Played: $strValue"
+                1 -> "FC: $strValue"
+                2 -> "AP: $strValue"
+                else -> strValue
+            }
+        }.joinToString(", ")
+    }
+
 
     @Throws(RemoteException::class)
     private suspend fun getFiletext(filePath: String): String {
@@ -276,7 +287,6 @@ class MainActivity : AppCompatActivity() {
         connectShizukuButton = findViewById(R.id.connect_shizuku_button)
         fileContentTextView = findViewById(R.id.file_content_text_view)
         clearCacheButton = findViewById(R.id.clear_cache_button)
-
     }
 
     companion object {
@@ -314,7 +324,7 @@ class MainActivity : AppCompatActivity() {
         fun getSavesFile() = File(cacheDir, "cached_saves.json")
         fun getSavesBase64File() = File(cacheDir, "cached_saves_base64.txt")
 
-        fun isCache() = getTokenFile().exists() && getSavesFile().exists()
+        fun isCache() = getTokenFile().exists() && getSavesFile().exists() && getSavesBase64File().exists()
 
         fun cacheToken(encryptedToken: String) {
             getTokenFile().writeText(encryptedToken)
@@ -348,13 +358,14 @@ class MainActivity : AppCompatActivity() {
             override fun onSuccess(resultUser: TDSUser) {
                 Toast.makeText(this@MainActivity, "成功登录 Taptap.", Toast.LENGTH_SHORT).show()
 
-                // 输出 resultUser
                 Timber.d("User Info: $resultUser")
-
-                // 获取用户信息
-                val userId = resultUser.objectId // 用户唯一标识
-                val avatar = resultUser.getString("avatar") // 头像
-                val nickName = resultUser.getString("nickname") // 昵称
+                val usertoken = resultUser.getString("sessionToken")
+                lifecycleScope.launch {
+                    fetchSaveData(usertoken)
+                }
+                val userId = resultUser.objectId
+                val avatar = resultUser.getString("avatar")
+                val nickName = resultUser.getString("nickname")
 
                 Timber.d("User ID: $userId, Avatar: $avatar, Nickname: $nickName")
             }
