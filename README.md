@@ -3,6 +3,9 @@
 ## ~~完工~~
 未完工,只实现了提取`sessionToken`,获取存档`URL`,存档预览。依赖`Shizuku`的`Shell`。
 
+## 注意
+- 这个分支由于使用了PCA,导致不再是MIT,而是AGPL
+
 ## 谢谢他们和它们
 - [**Phi-CloudAction-Python**](https://github.com/wms26/Phi-CloudAction-python)
 - [**PhigrosLibrary**](https://github.com/7aGiven/PhigrosLibrary)
